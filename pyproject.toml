@@ -1,9 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "trustsocket"
+name = "TrustSocket"
 version = "0.1.0"
-description = "Add your description here"
+description = "socket-based custom python library"
 readme = "README.md"
 requires-python = ">=3.10"
+
+authors = [
+  {name = "YorickFin", email = "1582456060@qq.com"},
+]
+
 dependencies = [
     "cryptography>=46.0.3",
+]
+
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/YorickFin/TrustSocket"
+
+[tool.setuptools.packages.find]
+exclude = [
+    "examples*",
+    "config*",
+    "tests*"
 ]
