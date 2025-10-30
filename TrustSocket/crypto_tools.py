@@ -335,7 +335,7 @@ class ServerAES:
 
     def __init__(self):
         self._lock = Lock()
-        self.server_keys = {}  # 服务端密钥: {user_mail: {"key": bytes, "time": int, "timeline": int}}
+        self.server_keys = {}  # 服务端密钥: {user_id: {"key": bytes, "time": int, "timeline": int}}
         Thread(target=self._cleanup_expired_keys, daemon=True).start()
 
     def _cleanup_expired_keys(self) -> None:
@@ -348,13 +348,13 @@ class ServerAES:
 
             with self._lock:
                 expired_users = [
-                    user_mail for user_mail, key_info in self.server_keys.items()
+                    user_id for user_id, key_info in self.server_keys.items()
                     if current_time - key_info["time"] > key_info["timeline"]
                 ]
 
-                for user_mail in expired_users:
-                    del self.server_keys[user_mail]
-                    print(f"服务端已清除过期密钥: {user_mail}")
+                for user_id in expired_users:
+                    del self.server_keys[user_id]
+                    print(f"服务端已清除过期密钥: {user_id}")
 
     def update_keys(self, key_info: dict) -> None:
         """
@@ -363,19 +363,19 @@ class ServerAES:
             key_info: 密钥信息
         """
         with self._lock:
-            self.server_keys[key_info["user_mail"]] = {
+            self.server_keys[key_info["user_id"]] = {
                 "key": bytes.fromhex(key_info["key"]),  # 从十六进制转换回字节
                 "time": key_info["time"],
                 "timeline": key_info["timeline"]
             }
         print(f"服务端密钥已更新: {key_info}")
 
-    def encrypt(self, data: dict, user_mail: str, associated_data: bytes = None) -> bytes:
+    def encrypt(self, data: dict, user_id: str, associated_data: bytes = None) -> bytes:
         """
         加密数据
         Args:
             data: 待加密数据
-            user_mail: 用户邮箱
+            user_id: 用户唯一标识
             associated_data: 关联数据
         Returns:
             加密后的数据
@@ -384,9 +384,9 @@ class ServerAES:
             raise ValueError("data 不能为空")
 
         with self._lock:
-            if user_mail not in self.server_keys:
-                raise ValueError(f"服务端未找到用户 {user_mail} 的密钥")
-            key = self.server_keys[user_mail]["key"]
+            if user_id not in self.server_keys:
+                raise ValueError(f"服务端未找到用户 {user_id} 的密钥")
+            key = self.server_keys[user_id]["key"]
 
         # 序列化数据
         data_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -398,12 +398,12 @@ class ServerAES:
 
         return nonce + ciphertext
 
-    def decrypt(self, encrypted_data: bytes, user_mail: str, associated_data: bytes = None) -> dict:
+    def decrypt(self, encrypted_data: bytes, user_id: str, associated_data: bytes = None) -> dict:
         """
         解密数据
         Args:
             encrypted_data: 待解密数据
-            user_mail: 用户邮箱
+            user_id: 用户唯一标识
             associated_data: 关联数据
         Returns:
             解密后的数据
@@ -415,9 +415,9 @@ class ServerAES:
             raise ValueError("加密数据格式错误")
 
         with self._lock:
-            if user_mail not in self.server_keys:
-                raise ValueError(f"服务端未找到用户 {user_mail} 的密钥")
-            key = self.server_keys[user_mail]["key"]
+            if user_id not in self.server_keys:
+                raise ValueError(f"服务端未找到用户 {user_id} 的密钥")
+            key = self.server_keys[user_id]["key"]
 
         # 分离 nonce 和密文
         nonce = encrypted_data[:12]
