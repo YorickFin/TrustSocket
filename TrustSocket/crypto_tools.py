@@ -14,6 +14,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
+from .constants import MESSAGE_HEAD_RSA, MESSAGE_HEAD_AES, MESSAGE_END, SPLIT_CHAR
+
 
 class ClientRSA:
     """
@@ -22,9 +24,9 @@ class ClientRSA:
         rsa_key_file: RSA密钥文件路径
     """
 
-    def __init__(self, rsa_key_file: str=None):
-        if rsa_key_file is None or not os.path.isfile(rsa_key_file):
-            raise ValueError("rsa_key_file 不能为空或不是有效的文件")
+    def __init__(self, rsa_key_file: str):
+        if not os.path.isfile(rsa_key_file):
+            raise ValueError("rsa_key_file 不是有效的文件")
 
         self.client_key = self.load_rsa_key(rsa_key_file)
 
@@ -42,7 +44,7 @@ class ClientRSA:
 
         try:
             key = serialization.load_pem_public_key(key_data)
-            print(f"已加载公钥: {key_file_path}")
+            print(f"已加载RSA公钥: {key_file_path}")
         except Exception as e:
             raise ValueError(f"加载RSA公钥错误: {e}")
 
@@ -56,8 +58,6 @@ class ClientRSA:
         Returns:
             加密后的数据
         """
-        if data is None:
-            raise ValueError("data 不能为 None")
 
         # 序列化数据
         data_bytes = json.dumps(data).encode('utf-8')
@@ -67,7 +67,7 @@ class ClientRSA:
         if len(data_bytes) > max_length:
             raise ValueError(f"数据过长，最大支持 {max_length} 字节")
 
-        encrypted_data = self.client_key.encrypt(
+        data = self.client_key.encrypt(
             data_bytes,
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -75,9 +75,9 @@ class ClientRSA:
                 label=None
             )
         )
-        return encrypted_data
+        return MESSAGE_HEAD_RSA + data + MESSAGE_END
 
-    def verify(self, data: bytes, signature: bytes) -> tuple[bool, Union[dict, None]]:
+    def verify(self, data: bytes) -> tuple[bool, Union[dict, None]]:
         """
         使用公钥验证签名
         Args:
@@ -86,9 +86,13 @@ class ClientRSA:
         Returns:
             验证结果, 解密后的数据
         """
-        if data is None or signature is None:
-            raise ValueError("data 和 signature 不能为 None")
 
+        # 去除头尾标识
+        data = data[len(MESSAGE_HEAD_RSA):-len(MESSAGE_END)]
+        # 分割数据和签名
+        data, signature = data.split(SPLIT_CHAR)
+
+        # 验证签名
         try:
             self.client_key.verify(
                 signature,
@@ -111,9 +115,9 @@ class ServerRSA:
         rsa_key_file: RSA密钥文件路径
     """
 
-    def __init__(self, rsa_key_file: str=None):
-        if rsa_key_file is None or not os.path.isfile(rsa_key_file):
-            raise ValueError("rsa_key_file 不能为空或不是有效的文件")
+    def __init__(self, rsa_key_file: str):
+        if  not os.path.isfile(rsa_key_file):
+            raise ValueError("rsa_key_file 不是有效的文件")
 
         self.server_key = self.load_rsa_key(rsa_key_file)
 
@@ -145,8 +149,9 @@ class ServerRSA:
         Returns:
             解密后的数据
         """
-        if data is None:
-            raise ValueError("data 不能为 None")
+
+        # 去除头尾标识
+        data = data[len(MESSAGE_HEAD_RSA):-len(MESSAGE_END)]
 
         decrypted_data = self.server_key.decrypt(
             data,
@@ -160,16 +165,14 @@ class ServerRSA:
         # 反序列化数据
         return json.loads(decrypted_data.decode('utf-8'))
 
-    def sign(self, data: dict) -> tuple[bytes, bytes]:
+    def sign(self, data: dict) -> bytes:
         """
         使用私钥签名数据
         Args:
             data: 待签名数据
         Returns:
-            序列化数据, 签名
+            序列化数据 + 分隔符 + 签名
         """
-        if data is None:
-            raise ValueError("data 不能为 None")
 
         # 序列化数据
         data_bytes = json.dumps(data).encode('utf-8')
@@ -183,7 +186,7 @@ class ServerRSA:
             ),
             hashes.SHA256()
         )
-        return data_bytes, signature
+        return MESSAGE_HEAD_RSA + data_bytes + SPLIT_CHAR + signature + MESSAGE_END
 
     @classmethod
     def generate_key(cls, save_key_dir: str, public_exponent: int=65537, key_size: int=2048) -> str:
@@ -236,22 +239,13 @@ class ServerRSA:
 
 
 class ClientAES:
-    """
-    AES加密工具类(客户端)
-    Args:
-        timeline: 密钥有效期（秒）
-    """
+    """AES加密工具类(客户端)"""
 
-    def __init__(self, timeline: int = 3600):
-        if not timeline or timeline < 60:
-            raise ValueError("密钥有效期不能小于60秒")
-
-        self.generate_key(timeline)
-
+    def __init__(self):
+        self.token = None
         self.client_key = None
-        self.client_key_send = {}
 
-    def generate_key(self, timeline: int=3600) -> None:
+    def generate_key(self, timeline: int=3600) -> dict:
         """
         生成AES密钥
         Args:
@@ -262,18 +256,15 @@ class ClientAES:
         if not timeline or timeline < 60:
             raise ValueError("密钥有效期不能小于60秒")
 
-        key = AESGCM.generate_key(bit_length=256)
-
-        self.client_key = key
-
-        self.client_key_send = {
-            "key": key.hex(),  # 转换为十六进制字符串便于传输
-            "time": time.time(),
+        key_info = {
+            "key": AESGCM.generate_key(bit_length=256),
+            "time": int(time.time()),
             "timeline": timeline
         }
-        print(f"客户端密钥已生成: {self.client_key_send}")
 
-    def encrypt(self, data: dict, associated_data: bytes = None) -> bytes:
+        return key_info
+
+    def encrypt(self, data: dict, associated_data: bytes=None) -> bytes:
         """
         加密数据
         Args:
@@ -282,40 +273,35 @@ class ClientAES:
         Returns:
             加密后的数据
         """
-        if not data:
-            raise ValueError("data 不能为空")
 
         # 序列化数据
         data_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
 
         # 加密
-        aesgcm = AESGCM(self.client_key)
+        aesgcm = AESGCM(self.client_key["key"])
         nonce = os.urandom(12)
         ciphertext = aesgcm.encrypt(nonce, data_bytes, associated_data)
 
-        return nonce + ciphertext
+        return MESSAGE_HEAD_AES + nonce + ciphertext + self.token + MESSAGE_END
 
-    def decrypt(self, encrypted_data: bytes, associated_data: bytes = None) -> dict:
+    def decrypt(self, data: bytes, associated_data: bytes=None) -> dict:
         """
         解密数据
         Args:
-            encrypted_data: 待解密数据
+            data: 待解密数据
             associated_data: 关联数据
         Returns:
             解密后的数据
         """
-        if not encrypted_data:
-            raise ValueError("encrypted_data 不能为空")
 
-        if len(encrypted_data) < 13:
-            raise ValueError("加密数据格式错误")
-
+        # 去除头尾标识
+        data = data[len(MESSAGE_HEAD_AES):-len(MESSAGE_END)]
         # 分离 nonce 和密文
-        nonce = encrypted_data[:12]
-        ciphertext = encrypted_data[12:]
+        nonce = data[:12]
+        ciphertext = data[12:]
 
         # 解密
-        aesgcm = AESGCM(self.client_key)
+        aesgcm = AESGCM(self.client_key["key"])
         try:
             plaintext = aesgcm.decrypt(nonce, ciphertext, associated_data)
         except Exception as e:
@@ -329,64 +315,64 @@ class ClientAES:
 
 
 class ServerAES:
-    """
-    AES加密工具类(服务端)
-    """
+    """AES加密工具类(服务端)"""
 
     def __init__(self):
         self._lock = Lock()
-        self.server_keys = {}  # 服务端密钥: {user_id: {"key": bytes, "time": int, "timeline": int}}
-        Thread(target=self._cleanup_expired_keys, daemon=True).start()
+        self.server_keys = {}  # 服务端密钥: {"token": {"key": bytes, "time": int, "timeline": int}}
+        Thread(target=self._cleanup_expired_keys).start()
 
     def _cleanup_expired_keys(self) -> None:
-        """
-        清理过期密钥
-        """
+        """清理过期密钥"""
+
         while True:
             time.sleep(60)  # 每分钟检查一次
             current_time = time.time()
 
             with self._lock:
-                expired_users = [
-                    user_id for user_id, key_info in self.server_keys.items()
+                expired_tokens = [
+                    token for token, key_info in self.server_keys.items()
                     if current_time - key_info["time"] > key_info["timeline"]
                 ]
 
-                for user_id in expired_users:
-                    del self.server_keys[user_id]
-                    print(f"服务端已清除过期密钥: {user_id}")
+                for token in expired_tokens:
+                    del self.server_keys[token]
+                    print(f"服务端已清除过期密钥: {token}")
 
-    def update_keys(self, key_info: dict) -> None:
+    def update_keys(self, key_info: dict) -> str:
         """
         更新密钥
         Args:
             key_info: 密钥信息
+        Returns:
+            token
         """
+
         with self._lock:
-            self.server_keys[key_info["user_id"]] = {
+            token = hashlib.sha256(os.urandom(32) + str(time.time()).encode('utf-8')).hexdigest()
+            self.server_keys[token] = {
                 "key": bytes.fromhex(key_info["key"]),  # 从十六进制转换回字节
                 "time": key_info["time"],
                 "timeline": key_info["timeline"]
             }
         print(f"服务端密钥已更新: {key_info}")
+        return token
 
-    def encrypt(self, data: dict, user_id: str, associated_data: bytes = None) -> bytes:
+    def encrypt(self, token: str, data: dict, associated_data: bytes = None) -> bytes:
         """
         加密数据
         Args:
             data: 待加密数据
-            user_id: 用户唯一标识
+            token: 秘钥唯一标识
             associated_data: 关联数据
         Returns:
             加密后的数据
         """
-        if not data:
-            raise ValueError("data 不能为空")
 
         with self._lock:
-            if user_id not in self.server_keys:
-                raise ValueError(f"服务端未找到用户 {user_id} 的密钥")
-            key = self.server_keys[user_id]["key"]
+            if token not in self.server_keys:
+                raise ValueError(f"服务端未找到 {token} 的密钥")
+            key = self.server_keys[token]["key"]
 
         # 序列化数据
         data_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -396,32 +382,30 @@ class ServerAES:
         nonce = os.urandom(12)
         ciphertext = aesgcm.encrypt(nonce, data_bytes, associated_data)
 
-        return nonce + ciphertext
+        return MESSAGE_HEAD_AES + nonce + ciphertext + MESSAGE_END
 
-    def decrypt(self, encrypted_data: bytes, user_id: str, associated_data: bytes = None) -> dict:
+    def decrypt(self, data: bytes, associated_data: bytes = None) -> dict:
         """
         解密数据
         Args:
-            encrypted_data: 待解密数据
-            user_id: 用户唯一标识
+            data: 待解密数据
+            token: 秘钥唯一标识
             associated_data: 关联数据
         Returns:
             解密后的数据
         """
-        if not encrypted_data:
-            raise ValueError("encrypted_data 不能为空")
 
-        if len(encrypted_data) < 13:
-            raise ValueError("加密数据格式错误")
+        # 去除头尾标识
+        data = data[len(MESSAGE_HEAD_AES):-len(MESSAGE_END)]
+        nonce = data[:12]
+        token = data[-64:].decode('utf-8')
+        ciphertext = data[12:-64]
+        print(f"token：{token}")
 
         with self._lock:
-            if user_id not in self.server_keys:
-                raise ValueError(f"服务端未找到用户 {user_id} 的密钥")
-            key = self.server_keys[user_id]["key"]
-
-        # 分离 nonce 和密文
-        nonce = encrypted_data[:12]
-        ciphertext = encrypted_data[12:]
+            if token not in self.server_keys:
+                raise ValueError(f"服务端未找到 {token} 的密钥")
+            key = self.server_keys[token]["key"]
 
         # 解密
         aesgcm = AESGCM(key)
@@ -432,7 +416,9 @@ class ServerAES:
 
         # 反序列化
         try:
-            return json.loads(plaintext.decode('utf-8'))
+            data = json.loads(plaintext.decode('utf-8'))
+            data["token"] = token
+            return data
         except json.JSONDecodeError as e:
             raise ValueError("解密后的数据格式错误") from e
 
@@ -505,7 +491,7 @@ class FileHash:
     """文件哈希工具类"""
 
     @classmethod
-    def get_file_hash(cls, file_path: str) -> tuple[bytes, bytes]:
+    def hash_file(cls, file_path: str) -> tuple[bytes, bytes]:
         """
         计算文件哈希值
         Args:
@@ -521,7 +507,7 @@ class FileHash:
         return file_data, hashlib.sha256(file_data).hexdigest().encode('utf-8')
 
     @classmethod
-    def verify_file_hash(cls, file_path: str, hash256: bytes) -> bool:
+    def verify_file(cls, file_path: str, hash256: bytes) -> bool:
         """
         验证文件哈希值
         Args:
