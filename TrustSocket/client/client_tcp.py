@@ -1,9 +1,9 @@
 
 import time
-from threading import Thread, Lock
+from threading import Thread, Lock, Event
 from socket import socket, AF_INET, SOCK_STREAM
 
-from ..crypto_tools import ClientRSA, ClientAES, FileHash
+from ..crypto_tools import ClientRSA, ClientAES
 from ..constants import MESSAGE_HEAD_RSA, MESSAGE_HEAD_AES, MESSAGE_END
 
 class ClientTCP:
@@ -23,11 +23,19 @@ class ClientTCP:
         self.buflen = buflen
 
         self._lock = Lock()
+        self._aes_key_ready = Event()  # 用于指示AES密钥是否已更新完成
 
         self.client_rsa = ClientRSA(rsa_key_file)
         self.client_aes = ClientAES()
 
-        Thread(target=self._update_aes_key).start()  # 启动密钥更新线程
+        # 启动密钥更新线程
+        key_update_thread = Thread(target=self._update_aes_key)
+        key_update_thread.daemon = True
+        key_update_thread.start()
+
+        # 等待AES密钥更新完成
+        self._aes_key_ready.wait()
+        print("ClientTCP初始化完成，AES密钥已更新")
 
     def _update_aes_key(self) -> None:
         """更新AES密钥"""
@@ -55,29 +63,31 @@ class ClientTCP:
                                 time.sleep(5)  # 等待5秒后重试
 
                             # 生成新的密钥
-                            result = self.client_aes.generate_key(timeline=timeline)
+                            new_key = self.client_aes.generate_key(timeline=timeline)
                             key_info = {
                                 "event": "update_aes_key",
-                                "key": result["key"].hex(),
-                                "time": result["time"],
-                                "timeline": result["timeline"]
+                                "key": new_key["key"].hex(),
+                                "time": new_key["time"],
+                                "timeline": new_key["timeline"]
                             }
 
                             encrypted_data = self.client_rsa.encrypt(key_info)  # RSA加密AES密钥信息
-                            return_info = self.send_message(encrypted_data)  # 发送消息
+                            result = self.send_message(encrypted_data)  # 发送消息
 
-                            if return_info["event"] == "update_aes_key" and return_info["status"]:
+                            if result["event"] == "update_aes_key" and result["status"]:
                                 # 更新AES密钥
-                                self.client_aes.token = return_info["token"].encode('utf-8')
+                                self.client_aes.token = result["token"].encode('utf-8')
                                 self.client_aes.client_key = {
-                                    "key": result["key"],
-                                    "time": result["time"],
-                                    "timeline": result["timeline"]
+                                    "key": new_key["key"],
+                                    "time": new_key["time"],
+                                    "timeline": new_key["timeline"]
                                 }
                                 print("AES密钥更新成功")
                                 success = self._test_aes_key()  # 测试AES密钥
+                                if success:
+                                    self._aes_key_ready.set()  # 标记AES密钥已准备就绪
                             else:
-                                raise Exception(f"更新AES密钥失败：{return_info}")
+                                raise Exception(f"更新AES密钥失败：{result}")
                         except Exception as e:
                             retry_count += 1
                             last_error = e
@@ -95,8 +105,8 @@ class ClientTCP:
             "event": "test_aes_key"
         }
         encrypted_data = self.client_aes.encrypt(info)  # AES 加密测试信息
-        return_info = self.send_message(encrypted_data)  # 发送消息
-        if return_info["event"] == "test_aes_key" and return_info["status"]:
+        result = self.send_message(encrypted_data)  # 发送消息
+        if result["event"] == "test_aes_key" and result["status"]:
             print("AES密钥测试成功")
             return True
         else:
@@ -124,8 +134,8 @@ class ClientTCP:
             head_data = recved_data[:len(MESSAGE_HEAD_RSA)]
             if head_data == MESSAGE_HEAD_RSA:
                 # 验证RSA签名
-                verify_result, data = self.client_rsa.verify(recved_data)
-                if verify_result:
+                verify, data = self.client_rsa.verify(recved_data)
+                if verify:
                     return data
                 raise Exception("消息签名验证失败, 请检查密钥是否正确，或联系管理员")
             elif head_data == MESSAGE_HEAD_AES:
@@ -134,10 +144,4 @@ class ClientTCP:
                 return data
             else:
                 raise Exception("未知消息类型")
-
-    def send_file(self, file_data: str) -> None:
-        """发送文件(AES加密)"""
-
-    def recv_file(self, file_path: str) -> None:
-        """接收文件(AES加密)"""
 
